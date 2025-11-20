@@ -55,9 +55,104 @@ class MainApplication:
         self.setup_placeholders()
         self.restore_session_state()
 
+    def parse_custom_sttls(self, custom_input):
+        """Parse custom STTL input in various formats
+
+        Supports:
+        - id:(STTL/STTL-205890 STTL/STTL-205891 STTL/STTL-205901)
+        - Comma-separated: STTL-205890, STTL-205891, STTL-205901
+        - Space-separated: STTL-205890 STTL-205891 STTL-205901
+        - Mixed with STTL/ prefix
+
+        Returns:
+            list: List of STTL IDs (e.g., ['STTL-205890', 'STTL-205891'])
+        """
+        import re
+
+        if not custom_input or not custom_input.strip():
+            return []
+
+        sttls = []
+
+        # Check if it's in id:(...) format
+        id_match = re.search(r'id:\s*\((.*?)\)', custom_input)
+        if id_match:
+            content = id_match.group(1)
+        else:
+            content = custom_input
+
+        # Split by common delimiters (space, comma, newline)
+        tokens = re.split(r'[,\s\n]+', content)
+
+        for token in tokens:
+            token = token.strip()
+            if not token:
+                continue
+
+            # Extract STTL ID, handling STTL/ prefix
+            if 'STTL/' in token:
+                # Extract ID after STTL/
+                sttl_id = token.split('STTL/')[-1]
+            elif token.startswith('STTL-'):
+                # Already in correct format
+                sttl_id = token
+            elif token.startswith('STTL'):
+                # Add hyphen if missing
+                sttl_id = token.replace('STTL', 'STTL-', 1)
+            else:
+                # Assume it's just the number, add STTL- prefix
+                if token.isdigit() or (token.replace('-', '').isdigit()):
+                    sttl_id = f"STTL-{token}"
+                else:
+                    # Skip invalid tokens
+                    continue
+
+            # Clean up any trailing characters
+            sttl_id = sttl_id.rstrip('*').strip()
+
+            if sttl_id and sttl_id not in sttls:
+                sttls.append(sttl_id)
+
+        return sttls
+
+    def parse_and_display_sttls(self):
+        """Parse custom STTLs and display the formatted result"""
+        custom_input = self.app.custom_sttl_entry.get().strip()
+
+        if not custom_input:
+            messagebox.showwarning("No Input",
+                                 "Please enter STTLs in the custom STTL field.\n\n"
+                                 "Format: id:(STTL/STTL-205890 STTL/STTL-205891)")
+            return
+
+        # Parse the STTLs
+        parsed_sttls = self.parse_custom_sttls(custom_input)
+
+        if not parsed_sttls:
+            messagebox.showerror("Parse Error",
+                               "Could not parse any valid STTLs from the input.\n\n"
+                               "Please check the format and try again.")
+            return
+
+        # Store parsed STTLs
+        self.sttls = parsed_sttls
+
+        # Update the command display
+        self.update_zybot_command_display()
+
+        # Show success message with parsed STTLs
+        formatted_output = '\n'.join([f'  -t "{sttl}*"' for sttl in parsed_sttls])
+        result_message = f"✅ Parsed {len(parsed_sttls)} STTL(s):\n\n{formatted_output}\n\n" \
+                        f"Check the Generated Command section to see the full command."
+
+        messagebox.showinfo("STTLs Parsed Successfully", result_message)
+        self.logger.log(f"✅ Parsed {len(parsed_sttls)} STTLs: {parsed_sttls}", level='success')
+        self.app.show_toast(f"✅ Parsed {len(parsed_sttls)} STTLs", 'success')
+
     def setup_callbacks(self):
         self.app.download_sttls_button.config(command=self.run_download_sttls)
         self.app.run_zybot_button.config(command=self.run_zybot_tests)
+        self.app.parse_sttls_button.config(command=self.parse_and_display_sttls)
 
         # JFrog Artifactory callbacks
         self.app.download_build_button.config(command=self.run_download_build)
@@ -71,6 +166,7 @@ class MainApplication:
         for dropdown in self.app.device_dropdowns.values():
             dropdown.bind("<<ComboboxSelected>>", self.update_zybot_command_display)
         self.app.polarion_url_entry.bind("<KeyRelease>", self.update_zybot_command_display)
+        self.app.custom_sttl_entry.bind("<KeyRelease>", self.update_zybot_command_display)
 
         # Log controls callbacks
         self.app.clear_logs_button.config(command=self.clear_logs)
@@ -87,9 +183,22 @@ class MainApplication:
         self.refresh_scheduled_tasks_display()
 
     def update_zybot_command_display(self, event=None):
+        # Don't update if custom command mode is enabled
+        if self.app.use_custom_command.get():
+            return
+
         polarion_run_name = self.app.polarion_url_entry.get().split('/')[-1]
         devices = {dut: dropdown.get() for dut, dropdown in self.app.device_dropdowns.items() if dropdown.get()}
-        sttls = getattr(self, 'sttls', [])
+
+        # Check if custom STTLs are provided
+        custom_sttl_input = self.app.custom_sttl_entry.get().strip()
+        if custom_sttl_input:
+            # Use custom STTLs
+            sttls = self.parse_custom_sttls(custom_sttl_input)
+            self.logger.log(f"Using custom STTLs: {sttls}", level='info')
+        else:
+            # Fall back to downloaded STTLs
+            sttls = getattr(self, 'sttls', [])
 
         command = self.zybot_executor.get_command_string(polarion_run_name, devices, sttls)
 
@@ -139,11 +248,59 @@ class MainApplication:
 
     def _run_zybot_tests_thread(self):
         try:
+            # Check if custom command mode is enabled
+            if self.app.use_custom_command.get():
+                # Use the custom command directly
+                custom_command = self.app.zybot_command_text.get(1.0, tk.END).strip()
+                if not custom_command:
+                    self.logger.log("Custom command is empty. Please enter a valid command.", level='error')
+                    return
+
+                self.logger.log("Using custom command mode", level='info')
+
+                # Notify web server that tests are starting
+                self.web_server.start_test_execution(
+                    test_name="Custom Command",
+                    devices=[],
+                    total_tests=1
+                )
+
+                result = self.zybot_executor.run_custom_command(custom_command, self.stop_event)
+
+                if self.stop_event.is_set():
+                    self.logger.log("⚠️ Test execution cancelled by user", level='warning')
+                    self.app.show_toast("⚠️ Test cancelled", 'warning')
+                    self.web_server.end_test_execution()
+                    return
+
+                self.web_server.end_test_execution()
+
+                if result == "Pass":
+                    self.app.show_toast("✅ Tests completed successfully!", 'success')
+                else:
+                    self.app.show_toast("❌ Tests failed", 'error')
+
+                return
+
+            # Standard mode - use auto-generated command
             polarion_run_name = self.app.polarion_url_entry.get().split('/')[-1]
             devices = {dut: dropdown.get() for dut, dropdown in self.app.device_dropdowns.items()}
 
-            if not hasattr(self, 'sttls') or not self.sttls:
-                self.logger.log("No STTLs downloaded. Please download STTLs first.", level='error')
+            # Check if custom STTLs are provided
+            custom_sttl_input = self.app.custom_sttl_entry.get().strip()
+            if custom_sttl_input:
+                # Use custom STTLs
+                sttls = self.parse_custom_sttls(custom_sttl_input)
+                self.logger.log(f"Using custom STTLs: {sttls}", level='info')
+            else:
+                # Fall back to downloaded STTLs
+                if not hasattr(self, 'sttls') or not self.sttls:
+                    self.logger.log("No STTLs provided. Please download STTLs or enter them manually.", level='error')
+                    return
+                sttls = self.sttls
+
+            if not sttls:
+                self.logger.log("No STTLs to execute. Please provide test cases.", level='error')
                 return
 
             # Notify web server that tests are starting
@@ -152,10 +309,10 @@ class MainApplication:
             self.web_server.start_test_execution(
                 test_name=polarion_run_name,
                 devices=device_list,
-                total_tests=len(self.sttls)
+                total_tests=len(sttls)
             )
 
-            result = self.zybot_executor.run_tests(polarion_run_name, devices, self.sttls, self.stop_event)
+            result = self.zybot_executor.run_tests(polarion_run_name, devices, sttls, self.stop_event)
 
             if self.stop_event.is_set():
                 self.logger.log("⚠️ Test execution cancelled by user", level='warning')
@@ -274,13 +431,21 @@ class MainApplication:
 
     def browse_local_file(self):
         """Open file browser to select a local build file"""
+        # Use project root builds directory for consistency
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        builds_dir = os.path.join(project_root, "builds")
+
+        # Create builds directory if it doesn't exist
+        if not os.path.exists(builds_dir):
+            os.makedirs(builds_dir)
+
         file_path = filedialog.askopenfilename(
             title="Select Build File",
             filetypes=[
                 ("ZIP files", "*.zip"),
                 ("All files", "*.*")
             ],
-            initialdir=os.path.join(os.getcwd(), "builds")
+            initialdir=builds_dir
         )
         if file_path:
             self.app.local_file_entry.delete(0, tk.END)
@@ -385,11 +550,25 @@ class MainApplication:
 
     def validate_zybot_config(self):
         """Validate Zybot configuration before execution"""
-        # Check if STTLs are downloaded
-        if not hasattr(self, 'sttls') or not self.sttls:
-            messagebox.showerror("STTLs Not Downloaded",
-                               "Please download STTLs from Polarion first.\n\n"
-                               "Click 'Download STTLs' button to fetch test cases.")
+        # In custom command mode, only check if command is not empty
+        if self.app.use_custom_command.get():
+            custom_command = self.app.zybot_command_text.get(1.0, tk.END).strip()
+            if not custom_command:
+                messagebox.showerror("Custom Command Empty",
+                                   "Please enter a custom command to execute.\n\n"
+                                   "The command text area cannot be empty.")
+                return False
+            return True
+
+        # Standard mode validations
+        # Check if STTLs are provided (either downloaded or custom)
+        custom_sttl_input = self.app.custom_sttl_entry.get().strip()
+        has_sttls = (hasattr(self, 'sttls') and self.sttls) or custom_sttl_input
+
+        if not has_sttls:
+            messagebox.showerror("STTLs Not Provided",
+                               "Please download STTLs from Polarion or enter them manually.\n\n"
+                               "Use the custom STTL input field below the Polarion URL.")
             return False
 
         # Check if at least one device is selected

@@ -3,7 +3,6 @@ Task configuration dialog for scheduled tasks
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
-from datetime import datetime
 import uuid
 
 
@@ -27,7 +26,7 @@ class TaskConfigDialog(tk.Toplevel):
 
         # Configure window
         self.title("Configure Scheduled Task" if not task else f"Edit Task: {task.name}")
-        self.geometry("600x700")
+        self.geometry("600x800")
         self.resizable(False, False)
 
         # Make dialog modal
@@ -48,9 +47,42 @@ class TaskConfigDialog(tk.Toplevel):
 
     def create_widgets(self):
         """Create dialog widgets"""
-        # Main container
-        container = tk.Frame(self, bg='#f5f5f5', padx=20, pady=20)
-        container.pack(fill=tk.BOTH, expand=True)
+        # Main container with canvas for scrolling
+        main_frame = tk.Frame(self, bg='#f5f5f5')
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Create canvas and scrollbar for scrollable content
+        canvas = tk.Canvas(main_frame, bg='#f5f5f5', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main_frame, orient='vertical', command=canvas.yview)
+
+        # Scrollable container
+        container = tk.Frame(canvas, bg='#f5f5f5', padx=20, pady=20)
+
+        # Configure canvas
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Create window in canvas
+        canvas_window = canvas.create_window((0, 0), window=container, anchor='nw')
+
+        # Configure scroll region when container changes size
+        def configure_scroll_region(event=None):
+            canvas.configure(scrollregion=canvas.bbox('all'))
+
+        container.bind('<Configure>', configure_scroll_region)
+
+        # Make canvas expand to window width
+        def configure_canvas_width(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+
+        canvas.bind('<Configure>', configure_canvas_width)
+
+        # Bind mousewheel for scrolling
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
 
         # Task Name
         name_frame = tk.LabelFrame(container, text="Task Name", bg='white', padx=10, pady=10)
@@ -144,17 +176,25 @@ class TaskConfigDialog(tk.Toplevel):
         device_entry = tk.Entry(device_frame, textvariable=self.device_var, font=('Segoe UI', 9))
         device_entry.pack(fill=tk.X)
 
-        # Buttons
-        button_frame = tk.Frame(container, bg='#f5f5f5')
-        button_frame.pack(fill=tk.X, pady=(10, 0))
+        # Buttons in a fixed footer (outside scrollable area)
+        button_frame = tk.Frame(self, bg='#e9ecef', relief='flat', bd=1)
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=0, pady=0)
 
-        tk.Button(button_frame, text="Cancel", command=self.cancel,
-                 font=('Segoe UI', 10), bg='#6c757d', fg='white',
-                 padx=20, pady=8, relief='flat', cursor='hand2').pack(side=tk.RIGHT, padx=(5, 0))
+        # Inner frame for padding
+        button_inner = tk.Frame(button_frame, bg='#e9ecef')
+        button_inner.pack(fill=tk.X, padx=20, pady=15)
 
-        tk.Button(button_frame, text="Save Task", command=self.save_task,
-                 font=('Segoe UI', 10, 'bold'), bg='#0066cc', fg='white',
-                 padx=20, pady=8, relief='flat', cursor='hand2').pack(side=tk.RIGHT)
+        cancel_btn = tk.Button(button_inner, text="✖ Cancel", command=self.cancel,
+                              font=('Segoe UI', 10), bg='#6c757d', fg='white',
+                              padx=25, pady=10, relief='flat', cursor='hand2',
+                              activebackground='#5a6268')
+        cancel_btn.pack(side=tk.RIGHT, padx=(5, 0))
+
+        save_btn = tk.Button(button_inner, text="✓ Save Task", command=self.save_task,
+                            font=('Segoe UI', 10, 'bold'), bg='#0066cc', fg='white',
+                            padx=25, pady=10, relief='flat', cursor='hand2',
+                            activebackground='#0052a3')
+        save_btn.pack(side=tk.RIGHT)
 
     def update_schedule_inputs(self):
         """Update schedule input fields based on selected schedule type"""

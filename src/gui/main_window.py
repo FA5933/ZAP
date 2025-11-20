@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext, font
+from tkinter import ttk, scrolledtext
 import sys
 import os
 
@@ -249,9 +249,20 @@ class App(tk.Tk):
         # PC IP
         self.ip_label = self._create_info_label(pc_container, "PC IP:", "N/A")
 
+        # Run Zybot Tests Button
+        run_btn_frame = tk.Frame(monitor_frame, bg=self.colors['card_bg'])
+        run_btn_frame.pack(fill=tk.X, pady=(15, 5))
+
+        self.run_zybot_button = tk.Button(run_btn_frame, text="▶ Run Zybot Tests",
+                                         font=('Segoe UI', 9, 'bold'),
+                                         bg=self.colors['success'], fg='white',
+                                         relief='flat', cursor='hand2', pady=10,
+                                         activebackground='#218838', activeforeground='white')
+        self.run_zybot_button.pack(fill=tk.X)
+
         # Kill Process Button
         kill_btn_frame = tk.Frame(monitor_frame, bg=self.colors['card_bg'])
-        kill_btn_frame.pack(fill=tk.X, pady=(15, 5))
+        kill_btn_frame.pack(fill=tk.X, pady=(5, 5))
 
         self.kill_button = tk.Button(kill_btn_frame, text="⚠ Kill Process",
                                      font=('Segoe UI', 9, 'bold'),
@@ -348,6 +359,35 @@ class App(tk.Tk):
                                               activebackground=self.colors['primary_hover'])
         self.download_sttls_button.pack(side=tk.LEFT)
 
+        # Custom STTL input section
+        custom_sttl_frame = tk.Frame(polarion_frame, bg=self.colors['card_bg'])
+        custom_sttl_frame.pack(fill=tk.X, pady=(10, 5))
+
+        tk.Label(custom_sttl_frame, text="Or enter STTLs manually:", font=('Segoe UI', 9),
+                bg=self.colors['card_bg'], fg=self.colors['text']).pack(anchor='w', pady=(0, 5))
+
+        # Input row with entry and button
+        input_row = tk.Frame(custom_sttl_frame, bg=self.colors['card_bg'])
+        input_row.pack(fill=tk.X)
+
+        self.custom_sttl_entry = tk.Entry(input_row, font=('Segoe UI', 9),
+                                          relief='solid', bd=1, bg='white')
+        self.custom_sttl_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4, padx=(0, 10))
+
+        self.parse_sttls_button = tk.Button(input_row, text="🔄 Parse STTLs",
+                                           font=('Segoe UI', 9, 'bold'),
+                                           bg=self.colors['primary'], fg='white',
+                                           relief='flat', cursor='hand2', padx=15, pady=6,
+                                           activebackground=self.colors['primary_hover'])
+        self.parse_sttls_button.pack(side=tk.LEFT)
+
+        # Add helper text
+        helper_label = tk.Label(custom_sttl_frame,
+                               text="Format: id:(STTL/STTL-205890 STTL/STTL-205891) or comma-separated",
+                               font=('Segoe UI', 8), bg=self.colors['card_bg'],
+                               fg=self.colors['text_light'])
+        helper_label.pack(anchor='w', pady=(2, 0))
+
     def _create_zybot_section(self, parent):
         """Create the Zybot execution section"""
         zybot_frame = tk.LabelFrame(parent, text="🤖 Zybot Test Execution", bg=self.colors['card_bg'],
@@ -377,23 +417,28 @@ class App(tk.Tk):
         device_grid.columnconfigure(0, weight=1)
         device_grid.columnconfigure(1, weight=1)
 
-        # Run button
-        btn_frame = tk.Frame(zybot_frame, bg=self.colors['card_bg'])
-        btn_frame.pack(fill=tk.X, pady=(10, 5))
-
-        self.run_zybot_button = tk.Button(btn_frame, text="▶ Run Zybot Tests",
-                                         font=('Segoe UI', 10, 'bold'),
-                                         bg=self.colors['success'], fg='white',
-                                         relief='flat', cursor='hand2', pady=10,
-                                         activebackground='#218838', activeforeground='white')
-        self.run_zybot_button.pack(fill=tk.X)
-
     def _create_command_section(self, parent):
         """Create the generated command display section"""
         command_frame = tk.LabelFrame(parent, text="💻 Generated Zybot Command", bg=self.colors['card_bg'],
                                      fg=self.colors['text'], font=('Segoe UI', 10, 'bold'),
                                      relief='solid', bd=1, padx=15, pady=10)
         command_frame.pack(fill=tk.X, pady=(0, 15))
+
+        # Add checkbox for custom command mode
+        checkbox_frame = tk.Frame(command_frame, bg=self.colors['card_bg'])
+        checkbox_frame.pack(fill=tk.X, pady=(0, 5))
+
+        self.use_custom_command = tk.BooleanVar(value=False)
+        custom_cmd_checkbox = tk.Checkbutton(checkbox_frame,
+                                            text="Use custom command",
+                                            variable=self.use_custom_command,
+                                            font=('Segoe UI', 9),
+                                            bg=self.colors['card_bg'],
+                                            fg=self.colors['text'],
+                                            activebackground=self.colors['card_bg'],
+                                            selectcolor='white',
+                                            command=self.toggle_custom_command_mode)
+        custom_cmd_checkbox.pack(side=tk.LEFT)
 
         self.zybot_command_text = scrolledtext.ScrolledText(command_frame, wrap=tk.WORD, height=4,
                                                             font=('Consolas', 9), bg='#f8f9fa',
@@ -759,6 +804,15 @@ class App(tk.Tk):
             self.progress_bar['value'] = 0
             self.progress_label.config(text="")
 
+    def toggle_custom_command_mode(self):
+        """Toggle between auto-generated and custom command mode"""
+        if self.use_custom_command.get():
+            # Enable editing for custom command
+            self.zybot_command_text.configure(state='normal', bg='#ffffff')
+        else:
+            # Disable editing (auto-generated mode)
+            self.zybot_command_text.configure(state='disabled', bg='#f8f9fa')
+
     def _setup_tooltips(self):
         """Add helpful tooltips to all buttons and inputs"""
         # Polarion section
@@ -766,6 +820,10 @@ class App(tk.Tk):
                    "Enter the full Polarion test run URL\nExample: https://polarion.zebra.com/...")
         add_tooltip(self.download_sttls_button,
                    "Download test cases from Polarion\nShortcut: Ctrl+Enter")
+        add_tooltip(self.custom_sttl_entry,
+                   "Enter STTLs manually in format:\nid:(STTL/STTL-205890 STTL/STTL-205891)\nor comma/space separated")
+        add_tooltip(self.parse_sttls_button,
+                   "Parse the custom STTL input\nand display formatted command")
 
         # Zybot section
         for i, (dut, dropdown) in enumerate(self.device_dropdowns.items(), 1):
@@ -773,6 +831,10 @@ class App(tk.Tk):
                        f"Select device for {dut}\nDevices are detected via ADB")
         add_tooltip(self.run_zybot_button,
                    "Execute Zybot tests on selected devices\nShortcut: F5\n\n⚠️ STTLs must be downloaded first")
+
+        # Command section
+        add_tooltip(self.zybot_command_text,
+                   "Auto-generated Zybot command\nCheck 'Use custom command' to edit manually")
 
         # JFrog section
         add_tooltip(self.flash_device_dropdown,

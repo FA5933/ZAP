@@ -2,7 +2,6 @@ import requests
 import os
 import subprocess
 import time
-import re
 from bs4 import BeautifulSoup
 
 class ArtifactoryManager:
@@ -204,6 +203,11 @@ class ArtifactoryManager:
                     with open(file_path, mode) as f:
                         last_print_time = time.time()
                         for chunk in response.iter_content(chunk_size=chunk_size):
+                            # Check for cancellation
+                            if stop_event and stop_event.is_set():
+                                self.logger.log("⚠️ Download cancelled by user", level='warning')
+                                return None
+
                             if chunk:
                                 f.write(chunk)
                                 downloaded += len(chunk)
@@ -213,7 +217,12 @@ class ArtifactoryManager:
                                 if total_size > 0 and (current_time - last_print_time >= 2):
                                     percent = (downloaded / total_size) * 100
                                     self.logger.log(f"Download progress: {percent:.1f}%")
+                                    if app:
+                                        app.update_progress(downloaded, total_size, "Downloading")
                                     last_print_time = current_time
+
+                    if app:
+                        app.hide_progress()
 
                     self.logger.log(f"Build downloaded successfully: {file_path}", level='success')
                     return file_path
@@ -246,16 +255,18 @@ class ArtifactoryManager:
             self.logger.log(f"Traceback: {traceback.format_exc()}")
             return None
 
-    def download_and_flash_build(self, build_link, device_serial=None):
+    def download_and_flash_build(self, build_link, device_serial=None, stop_event=None, app=None):
         """Download and immediately flash a build
 
         Args:
             build_link: URL to the build artifact
             device_serial: Serial number of device to flash (None for first device)
+            stop_event: Threading event for cancellation
+            app: App instance for progress updates
         """
-        file_path = self.download_build(build_link)
-        if file_path:
-            self.flash_build(file_path, device_serial)
+        file_path = self.download_build(build_link, stop_event, app)
+        if file_path and not (stop_event and stop_event.is_set()):
+            self.flash_build(file_path, device_serial, stop_event, app)
 
     def flash_build(self, file_path, device_serial=None, stop_event=None, app=None):
         """Flash a build file to connected device
