@@ -157,6 +157,9 @@ class App(tk.Tk):
         # JFrog Artifactory Section (Left Column)
         self._create_jfrog_section(left_column)
 
+        # Scheduled Tasks Section (Left Column)
+        self._create_scheduler_section(left_column)
+
         # Log Display (Left Column)
         self._create_log_section(left_column)
 
@@ -501,6 +504,91 @@ class App(tk.Tk):
                                            activebackground='#218838')
         self.flash_local_button.pack(side=tk.LEFT)
 
+    def _create_scheduler_section(self, parent):
+        """Create the scheduled tasks management section"""
+        scheduler_frame = tk.LabelFrame(parent, text="🕐 Scheduled Tasks", bg=self.colors['card_bg'],
+                                       fg=self.colors['text'], font=('Segoe UI', 10, 'bold'),
+                                       relief='solid', bd=1, padx=15, pady=10)
+        scheduler_frame.pack(fill=tk.X, pady=(0, 15))
+
+        # Header with status and controls
+        header_frame = tk.Frame(scheduler_frame, bg=self.colors['card_bg'])
+        header_frame.pack(fill=tk.X, pady=(5, 10))
+
+        # Scheduler status indicator
+        status_frame = tk.Frame(header_frame, bg=self.colors['card_bg'])
+        status_frame.pack(side=tk.LEFT)
+
+        tk.Label(status_frame, text="Status:", font=('Segoe UI', 9),
+                bg=self.colors['card_bg'], fg=self.colors['text_light']).pack(side=tk.LEFT, padx=(0, 5))
+
+        self.scheduler_status_indicator = tk.Label(status_frame, text="●", font=('Segoe UI', 12),
+                                                   bg=self.colors['card_bg'], fg=self.colors['status_disconnected'])
+        self.scheduler_status_indicator.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.scheduler_status_label = tk.Label(status_frame, text="Stopped",
+                                              font=('Segoe UI', 9, 'bold'),
+                                              bg=self.colors['card_bg'], fg=self.colors['text'])
+        self.scheduler_status_label.pack(side=tk.LEFT)
+
+        # Control buttons
+        control_frame = tk.Frame(header_frame, bg=self.colors['card_bg'])
+        control_frame.pack(side=tk.RIGHT)
+
+        self.scheduler_start_button = tk.Button(control_frame, text="▶ Start",
+                                               font=('Segoe UI', 8, 'bold'),
+                                               bg=self.colors['success'], fg='white',
+                                               relief='flat', cursor='hand2', padx=10, pady=4,
+                                               activebackground='#218838')
+        self.scheduler_start_button.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.scheduler_stop_button = tk.Button(control_frame, text="⏸ Stop",
+                                              font=('Segoe UI', 8, 'bold'),
+                                              bg=self.colors['warning'], fg='#212529',
+                                              relief='flat', cursor='hand2', padx=10, pady=4,
+                                              activebackground='#e0a800')
+        self.scheduler_stop_button.pack(side=tk.LEFT)
+
+        # Task list container
+        task_list_container = tk.Frame(scheduler_frame, bg=self.colors['card_bg'])
+        task_list_container.pack(fill=tk.BOTH, expand=True, pady=(5, 10))
+
+        # Scrollable task list
+        task_canvas = tk.Canvas(task_list_container, bg='#f8f9fa', relief='solid', bd=1,
+                               highlightthickness=0, height=150)
+        task_scrollbar = ttk.Scrollbar(task_list_container, orient='vertical', command=task_canvas.yview)
+        self.tasks_frame = tk.Frame(task_canvas, bg='#f8f9fa')
+
+        self.tasks_frame.bind('<Configure>',
+                             lambda e: task_canvas.configure(scrollregion=task_canvas.bbox('all')))
+
+        task_canvas.create_window((0, 0), window=self.tasks_frame, anchor='nw')
+        task_canvas.configure(yscrollcommand=task_scrollbar.set)
+
+        task_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        task_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Store canvas for later reference
+        self.tasks_canvas = task_canvas
+
+        # Initial empty state message
+        self.no_tasks_label = tk.Label(self.tasks_frame,
+                                       text="No scheduled tasks\n\nClick 'Add Task' to create a new scheduled task",
+                                       font=('Segoe UI', 9), bg='#f8f9fa',
+                                       fg=self.colors['text_light'], pady=30)
+        self.no_tasks_label.pack()
+
+        # Add task button
+        add_task_frame = tk.Frame(scheduler_frame, bg=self.colors['card_bg'])
+        add_task_frame.pack(fill=tk.X, pady=(5, 0))
+
+        self.add_task_button = tk.Button(add_task_frame, text="➕ Add Task",
+                                        font=('Segoe UI', 9, 'bold'),
+                                        bg=self.colors['primary'], fg='white',
+                                        relief='flat', cursor='hand2', pady=8,
+                                        activebackground=self.colors['primary_hover'])
+        self.add_task_button.pack(fill=tk.X)
+
     def _create_log_section(self, parent):
         """Create the log display section"""
         log_frame = tk.LabelFrame(parent, text="📋 System Logs", bg=self.colors['card_bg'],
@@ -704,6 +792,14 @@ class App(tk.Tk):
         add_tooltip(self.kill_button,
                    "Terminate current operation\nShortcut: Esc\n\n⚠️ May leave incomplete files")
 
+        # Scheduler section
+        add_tooltip(self.scheduler_start_button,
+                   "Start the task scheduler\nScheduled tasks will run automatically")
+        add_tooltip(self.scheduler_stop_button,
+                   "Stop the task scheduler\nScheduled tasks will not run")
+        add_tooltip(self.add_task_button,
+                   "Create a new scheduled task\nAutomate build flashing and testing")
+
         # Log controls
         add_tooltip(self.log_search_entry,
                    "Search logs for specific text")
@@ -711,6 +807,112 @@ class App(tk.Tk):
                    "Clear all log messages\nShortcut: Ctrl+L")
         add_tooltip(self.export_logs_button,
                    "Export logs to text file\nShortcut: Ctrl+S")
+
+    def update_scheduled_tasks_list(self, tasks):
+        """Update the scheduled tasks list display
+        
+        Args:
+            tasks: List of ScheduledTask objects
+        """
+        # Clear existing task widgets
+        for widget in self.tasks_frame.winfo_children():
+            widget.destroy()
+
+        if not tasks:
+            # Show empty state
+            self.no_tasks_label = tk.Label(self.tasks_frame,
+                                          text="No scheduled tasks\n\nClick 'Add Task' to create a new scheduled task",
+                                          font=('Segoe UI', 9), bg='#f8f9fa',
+                                          fg=self.colors['text_light'], pady=30)
+            self.no_tasks_label.pack()
+        else:
+            # Create a card for each task
+            for idx, task in enumerate(tasks):
+                task_card = tk.Frame(self.tasks_frame, bg='white', relief='solid',
+                                    bd=1, padx=12, pady=8)
+                task_card.pack(fill=tk.X, padx=8, pady=4)
+
+                # Task header with name and enabled status
+                header_frame = tk.Frame(task_card, bg='white')
+                header_frame.pack(fill=tk.X)
+
+                # Status indicator
+                status_color = self.colors['success'] if task.enabled else self.colors['text_light']
+                tk.Label(header_frame, text="●", font=('Segoe UI', 10),
+                        bg='white', fg=status_color).pack(side=tk.LEFT, padx=(0, 5))
+
+                # Task name
+                tk.Label(header_frame, text=task.name,
+                        font=('Segoe UI', 9, 'bold'), bg='white',
+                        fg=self.colors['text']).pack(side=tk.LEFT)
+
+                # Task type badge
+                type_colors = {
+                    'flash': '#17a2b8',
+                    'test': '#6f42c1',
+                    'flash_and_test': '#fd7e14'
+                }
+                badge_color = type_colors.get(task.task_type, self.colors['text_light'])
+                tk.Label(header_frame, text=task.task_type.replace('_', ' ').title(),
+                        font=('Segoe UI', 7, 'bold'), bg=badge_color, fg='white',
+                        padx=6, pady=2).pack(side=tk.LEFT, padx=(10, 0))
+
+                # Schedule info
+                schedule_frame = tk.Frame(task_card, bg='white')
+                schedule_frame.pack(fill=tk.X, pady=(4, 2))
+
+                tk.Label(schedule_frame, text="Schedule:", font=('Segoe UI', 8),
+                        bg='white', fg=self.colors['text_light']).pack(side=tk.LEFT)
+                
+                schedule_text = f"{task.schedule_type.title()}: {task.schedule_value}"
+                tk.Label(schedule_frame, text=schedule_text,
+                        font=('Segoe UI', 8), bg='white',
+                        fg=self.colors['text']).pack(side=tk.LEFT, padx=(5, 0))
+
+                # Next run time
+                if task.next_run:
+                    next_run_frame = tk.Frame(task_card, bg='white')
+                    next_run_frame.pack(fill=tk.X, pady=2)
+
+                    tk.Label(next_run_frame, text="Next run:", font=('Segoe UI', 8),
+                            bg='white', fg=self.colors['text_light']).pack(side=tk.LEFT)
+                    
+                    next_run_str = task.next_run.strftime("%Y-%m-%d %H:%M")
+                    tk.Label(next_run_frame, text=next_run_str,
+                            font=('Consolas', 8), bg='white',
+                            fg=self.colors['primary']).pack(side=tk.LEFT, padx=(5, 0))
+
+                # Action buttons
+                actions_frame = tk.Frame(task_card, bg='white')
+                actions_frame.pack(fill=tk.X, pady=(4, 0))
+
+                # Store task_id on the card for callbacks
+                task_card.task_id = task.task_id
+
+                # Enable/Disable button
+                toggle_text = "⏸ Disable" if task.enabled else "▶ Enable"
+                toggle_btn = tk.Button(actions_frame, text=toggle_text,
+                                      font=('Segoe UI', 7), bg='#6c757d', fg='white',
+                                      relief='flat', cursor='hand2', padx=8, pady=2)
+                toggle_btn.pack(side=tk.LEFT, padx=(0, 4))
+                toggle_btn.task_id = task.task_id
+                # Callback will be set in main.py
+
+                # Edit button
+                edit_btn = tk.Button(actions_frame, text="✏️ Edit",
+                                    font=('Segoe UI', 7), bg=self.colors['primary'], fg='white',
+                                    relief='flat', cursor='hand2', padx=8, pady=2)
+                edit_btn.pack(side=tk.LEFT, padx=(0, 4))
+                edit_btn.task_id = task.task_id
+                # Callback will be set in main.py
+
+                # Delete button
+                delete_btn = tk.Button(actions_frame, text="🗑️ Delete",
+                                      font=('Segoe UI', 7), bg=self.colors['danger'], fg='white',
+                                      relief='flat', cursor='hand2', padx=8, pady=2)
+                delete_btn.pack(side=tk.LEFT)
+                delete_btn.task_id = task.task_id
+                # Callback will be set in main.py
 
     def update_device_dropdowns(self, devices):
         """Update the device dropdown options"""

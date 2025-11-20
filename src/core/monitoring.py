@@ -4,10 +4,15 @@ from threading import Thread
 import socket
 
 class MonitorDaemon:
-    def __init__(self, app):
+    def __init__(self, app, web_server=None):
         self.app = app
+        self.web_server = web_server
         self.running = False
         self.thread = None
+
+    def set_web_server(self, web_server):
+        """Set the web server instance for pushing device updates"""
+        self.web_server = web_server
 
     def start(self):
         self.running = True
@@ -64,6 +69,12 @@ class MonitorDaemon:
                 if len(devices) == 1:
                     self.app.flash_device_dropdown.set(devices[0])
 
+                # Push to web server
+                if self.web_server:
+                    web_devices = [{'model': d['model'], 'serial': d['serial'], 'status': 'online'}
+                                  for d in devices_info]
+                    self.web_server.update_devices(web_devices)
+
             else:
                 self.app.device_status_label.config(text="No devices")
                 self.app.device_status_indicator.config(fg=self.app.colors['status_disconnected'])
@@ -72,6 +83,10 @@ class MonitorDaemon:
                 # Clear flash device dropdown
                 self.app.flash_device_dropdown['values'] = []
                 self.app.flash_device_dropdown.set('')
+
+                # Push empty devices to web server
+                if self.web_server:
+                    self.web_server.update_devices([])
 
         except (subprocess.CalledProcessError, FileNotFoundError):
             self.app.device_status_label.config(text="ADB Not Found")

@@ -3,9 +3,10 @@ import datetime
 import tkinter as tk
 
 class Logger:
-    def __init__(self, log_text_widget, auto_scroll_var=None):
+    def __init__(self, log_text_widget, auto_scroll_var=None, web_server=None):
         self.log_text_widget = log_text_widget
         self.auto_scroll_var = auto_scroll_var
+        self.web_server = web_server
         self.timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         self.log_file = f"zap_log_{self.timestamp}.txt"
 
@@ -24,6 +25,10 @@ class Logger:
             ]
         )
 
+    def set_web_server(self, web_server):
+        """Set the web server instance for pushing logs to dashboard"""
+        self.web_server = web_server
+
     def log(self, message, level='info'):
         """Logs a message to the GUI and file. Level can be 'info', 'success', 'error', or 'warning'."""
         if level == 'error':
@@ -41,4 +46,11 @@ class Logger:
         # Auto-scroll if enabled
         if self.auto_scroll_var is None or self.auto_scroll_var.get():
             self.log_text_widget.see(tk.END)
+
+        # Push log to web server
+        if self.web_server:
+            try:
+                self.web_server.add_log(message, level=level, source='ZAP')
+            except:
+                pass  # Don't let web server errors break logging
 

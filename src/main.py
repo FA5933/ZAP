@@ -6,11 +6,14 @@ import os
 import json
 
 from gui.main_window import App
+from gui.task_dialog import TaskConfigDialog
 from core.monitoring import MonitorDaemon
 from core.polarion import PolarionManager
 from core.zybot import ZybotExecutor
 from core.email_notifier import EmailNotifier
 from core.artifactory import ArtifactoryManager
+from core.scheduler import TaskScheduler, ScheduledTask
+from core.web_server import get_web_server
 from utils.logger import Logger
 
 class MainApplication:
@@ -32,6 +35,20 @@ class MainApplication:
 
         self.current_thread = None
         self.stop_event = Event()  # For graceful thread cancellation
+
+        # Initialize task scheduler BEFORE setup_callbacks
+        scheduler_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                     'scheduled_tasks.json')
+        self.task_scheduler = TaskScheduler(scheduler_file)
+        self.task_scheduler.set_logger(self.logger)
+        self.task_scheduler.set_task_executor(self.execute_scheduled_task)
+
+        # Initialize web server
+        self.web_server = get_web_server(port=5000)
+        self.web_server.start()
+        self.logger.set_web_server(self.web_server)
+        self.monitor_daemon.set_web_server(self.web_server)
+        self.logger.log(f"🌐 Web dashboard available at http://localhost:5000", level='success')
 
         self.setup_callbacks()
         self.setup_keyboard_shortcuts()
@@ -60,6 +77,14 @@ class MainApplication:
         self.app.export_logs_button.config(command=self.export_logs)
         self.app.log_level_var.trace('w', lambda *args: self.filter_logs())
         self.app.log_search_entry.bind('<KeyRelease>', lambda e: self.search_logs())
+
+        # Scheduler callbacks
+        self.app.scheduler_start_button.config(command=self.start_scheduler)
+        self.app.scheduler_stop_button.config(command=self.stop_scheduler)
+        self.app.add_task_button.config(command=self.add_scheduled_task)
+
+        # Update scheduler display
+        self.refresh_scheduled_tasks_display()
 
     def update_zybot_command_display(self, event=None):
         polarion_run_name = self.app.polarion_url_entry.get().split('/')[-1]
@@ -121,11 +146,21 @@ class MainApplication:
                 self.logger.log("No STTLs downloaded. Please download STTLs first.", level='error')
                 return
 
+            # Notify web server that tests are starting
+            device_list = [v.split('(')[1].split(')')[0] if '(' in v else v
+                          for v in devices.values() if v]
+            self.web_server.start_test_execution(
+                test_name=polarion_run_name,
+                devices=device_list,
+                total_tests=len(self.sttls)
+            )
+
             result = self.zybot_executor.run_tests(polarion_run_name, devices, self.sttls, self.stop_event)
 
             if self.stop_event.is_set():
                 self.logger.log("⚠️ Test execution cancelled by user", level='warning')
                 self.app.show_toast("⚠️ Test cancelled", 'warning')
+                self.web_server.end_test_execution()
                 return
 
             self.polarion_manager.upload_results(self.app.polarion_url_entry.get(), {"result": result})
@@ -136,6 +171,9 @@ class MainApplication:
 
             self.artifactory_manager.upload_logs(self.logger.log_file)
 
+            # Notify web server that tests are complete
+            self.web_server.end_test_execution()
+
             if result == "Pass":
                 self.app.show_toast("✅ Tests completed successfully!", 'success')
             else:
@@ -143,6 +181,7 @@ class MainApplication:
         except Exception as e:
             self.logger.log(f"Error during test execution: {e}", level='error')
             self.app.show_toast("❌ Test execution failed", 'error')
+            self.web_server.end_test_execution()
         finally:
             self.enable_action_buttons()
 
@@ -639,15 +678,245 @@ Navigation:
             self.app.log_text.tag_add('search_highlight', start_pos, end_pos)
             start_pos = end_pos
 
+    # ===== SCHEDULER METHODS =====
+
+    def start_scheduler(self):
+        """Start the task scheduler"""
+        self.task_scheduler.start()
+        self.app.scheduler_status_label.config(text="Running")
+        self.app.scheduler_status_indicator.config(fg=self.app.colors['status_connected'])
+        self.app.show_toast("✅ Scheduler started", 'success')
+        self.logger.log("🕐 Task scheduler started", level='success')
+
+    def stop_scheduler(self):
+        """Stop the task scheduler"""
+        result = messagebox.askyesno(
+            "Stop Scheduler",
+            "Are you sure you want to stop the task scheduler?\n\n"
+            "Scheduled tasks will not run until you start it again.",
+            icon='warning'
+        )
+
+        if result:
+            self.task_scheduler.stop()
+            self.app.scheduler_status_label.config(text="Stopped")
+            self.app.scheduler_status_indicator.config(fg=self.app.colors['status_disconnected'])
+            self.app.show_toast("⏸️ Scheduler stopped", 'warning')
+            self.logger.log("⏸️ Task scheduler stopped", level='info')
+
+    def add_scheduled_task(self):
+        """Open dialog to add a new scheduled task"""
+        dialog = TaskConfigDialog(self.app)
+        result = dialog.show()
+
+        if result:
+            task = ScheduledTask(
+                task_id=result['task_id'],
+                name=result['name'],
+                task_type=result['task_type'],
+                schedule_type=result['schedule_type'],
+                schedule_value=result['schedule_value'],
+                config=result['config'],
+                enabled=result['enabled']
+            )
+
+            if self.task_scheduler.add_task(task):
+                self.app.show_toast(f"✅ Task '{task.name}' created", 'success')
+                self.refresh_scheduled_tasks_display()
+            else:
+                messagebox.showerror("Error", "Failed to add task. Task ID may already exist.")
+
+    def edit_scheduled_task(self, task_id):
+        """Edit an existing scheduled task"""
+        task = self.task_scheduler.get_task(task_id)
+        if not task:
+            messagebox.showerror("Error", "Task not found")
+            return
+
+        dialog = TaskConfigDialog(self.app, task=task)
+        result = dialog.show()
+
+        if result:
+            updated_task = ScheduledTask(
+                task_id=result['task_id'],
+                name=result['name'],
+                task_type=result['task_type'],
+                schedule_type=result['schedule_type'],
+                schedule_value=result['schedule_value'],
+                config=result['config'],
+                enabled=result['enabled']
+            )
+
+            if self.task_scheduler.update_task(updated_task):
+                self.app.show_toast(f"✅ Task '{updated_task.name}' updated", 'success')
+                self.refresh_scheduled_tasks_display()
+
+    def delete_scheduled_task(self, task_id):
+        """Delete a scheduled task with confirmation"""
+        task = self.task_scheduler.get_task(task_id)
+        if not task:
+            return
+
+        result = messagebox.askyesno(
+            "Delete Task",
+            f"Are you sure you want to delete the task:\n\n'{task.name}'\n\n"
+            "This cannot be undone.",
+            icon='warning'
+        )
+
+        if result:
+            if self.task_scheduler.remove_task(task_id):
+                self.app.show_toast(f"🗑️ Task deleted", 'info')
+                self.refresh_scheduled_tasks_display()
+
+    def toggle_scheduled_task(self, task_id):
+        """Enable or disable a scheduled task"""
+        task = self.task_scheduler.get_task(task_id)
+        if not task:
+            return
+
+        if task.enabled:
+            self.task_scheduler.disable_task(task_id)
+            self.app.show_toast(f"⏸️ Task '{task.name}' disabled", 'info')
+        else:
+            self.task_scheduler.enable_task(task_id)
+            self.app.show_toast(f"▶ Task '{task.name}' enabled", 'success')
+
+        self.refresh_scheduled_tasks_display()
+
+    def refresh_scheduled_tasks_display(self):
+        """Refresh the scheduled tasks display in GUI"""
+        tasks = self.task_scheduler.get_all_tasks()
+        self.app.update_scheduled_tasks_list(tasks)
+
+        # Set up callbacks for task action buttons
+        for widget in self.app.tasks_frame.winfo_children():
+            if hasattr(widget, 'task_id'):
+                for child in widget.winfo_children():
+                    if isinstance(child, tk.Frame):
+                        for button in child.winfo_children():
+                            if isinstance(button, tk.Button) and hasattr(button, 'task_id'):
+                                button_text = button.cget('text')
+                                task_id = button.task_id
+
+                                if 'Enable' in button_text or 'Disable' in button_text:
+                                    button.config(command=lambda tid=task_id: self.toggle_scheduled_task(tid))
+                                elif 'Edit' in button_text:
+                                    button.config(command=lambda tid=task_id: self.edit_scheduled_task(tid))
+                                elif 'Delete' in button_text:
+                                    button.config(command=lambda tid=task_id: self.delete_scheduled_task(tid))
+
+    def execute_scheduled_task(self, task: ScheduledTask) -> bool:
+        """
+        Execute a scheduled task
+
+        Args:
+            task: ScheduledTask to execute
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            self.logger.log(f"🚀 Executing scheduled task: {task.name}", level='info')
+            self.logger.log(f"   Type: {task.task_type}", level='info')
+            self.logger.log(f"   Schedule: {task.schedule_type} - {task.schedule_value}", level='info')
+
+            config = task.config
+            build_url = config.get('build_url', '')
+            device_serial = config.get('device', 'any')
+
+            # Execute based on task type
+            if task.task_type == 'flash':
+                return self._execute_flash_task(build_url, device_serial)
+
+            elif task.task_type == 'test':
+                test_url = config.get('test_url', '')
+                return self._execute_test_task(test_url)
+
+            elif task.task_type == 'flash_and_test':
+                # Flash first, then test
+                flash_success = self._execute_flash_task(build_url, device_serial)
+                if flash_success:
+                    test_url = config.get('test_url', '')
+                    return self._execute_test_task(test_url)
+                return False
+
+            return False
+
+        except Exception as e:
+            self.logger.log(f"❌ Scheduled task execution error: {e}", level='error')
+            return False
+
+    def _execute_flash_task(self, build_url: str, device_serial: str) -> bool:
+        """Execute a flash task"""
+        try:
+            self.logger.log(f"📦 Downloading build from: {build_url}", level='info')
+
+            # Get first available device if 'any' specified
+            if device_serial == 'any':
+                # Try to get first available device
+                device_serial = None  # Will use first device
+
+            # Download and flash
+            downloaded_file = self.artifactory_manager.download_build(build_url)
+            if downloaded_file:
+                self.logger.log(f"⚡ Flashing build to device...", level='info')
+                self.artifactory_manager.flash_build(downloaded_file, device_serial)
+                self.logger.log(f"✅ Flash task completed successfully", level='success')
+                return True
+            else:
+                self.logger.log(f"❌ Failed to download build", level='error')
+                return False
+
+        except Exception as e:
+            self.logger.log(f"❌ Flash task error: {e}", level='error')
+            return False
+
+    def _execute_test_task(self, test_url: str) -> bool:
+        """Execute a test task"""
+        try:
+            if not test_url:
+                self.logger.log("⚠️ No test URL configured", level='warning')
+                return False
+
+            self.logger.log(f"🧪 Running tests from: {test_url}", level='info')
+
+            # Download STTLs
+            sttls = self.polarion_manager.download_sttls(test_url)
+            if not sttls:
+                self.logger.log("⚠️ No STTLs found", level='warning')
+                return False
+
+            # Get available devices
+            # For scheduled tasks, we'll use all available devices
+            devices = {}  # Would need to get from monitoring daemon
+
+            # Run tests
+            polarion_run_name = test_url.split('/')[-1]
+            result = self.zybot_executor.run_tests(polarion_run_name, devices, sttls)
+
+            if result == "Pass":
+                self.logger.log(f"✅ Test task completed successfully", level='success')
+                return True
+            else:
+                self.logger.log(f"❌ Tests failed", level='error')
+                return False
+
+        except Exception as e:
+            self.logger.log(f"❌ Test task error: {e}", level='error')
+            return False
+
     def run(self):
         # Set up protocol for window close
         self.app.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.app.mainloop()
         self.monitor_daemon.stop()
+        self.task_scheduler.stop()
 
     def on_closing(self):
         """Handle window close event"""
         self.save_session_state()
+        self.task_scheduler.stop()
         self.app.destroy()
 
 if __name__ == "__main__":

@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZAP Test Bed Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: white;
+            padding: 25px 30px;
+            border-radius: 15px;
+            margin-bottom: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        h1 {
+            color: #667eea;
+            font-size: 32px;
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 25px;
+            margin-bottom: 25px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .card-icon {
+            font-size: 32px;
+            margin-right: 15px;
+        }
+
+        .card-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+
+        .status-online {
+            background: #28a745;
+            box-shadow: 0 0 10px #28a745;
+        }
+
+        .status-offline {
+            background: #dc3545;
+            box-shadow: 0 0 10px #dc3545;
+        }
+
+        .status-busy {
+            background: #ffc107;
+            box-shadow: 0 0 10px #ffc107;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .info-row:last-child {
+            border-bottom: none;
+        }
+
+        .info-label {
+            color: #666;
+            font-weight: 500;
+        }
+
+        .info-value {
+            color: #333;
+            font-weight: 600;
+        }
+
+        .device-card {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .device-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .device-serial {
+            font-family: 'Courier New', monospace;
+            color: #666;
+            font-size: 13px;
+        }
+
+        .no-devices {
+            text-align: center;
+            color: #999;
+            padding: 30px;
+            font-style: italic;
+        }
+
+        .test-progress {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+
+        .progress-bar-container {
+            background: #e0e0e0;
+            height: 25px;
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .progress-bar {
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            height: 100%;
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .test-stats {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 15px;
+        }
+
+        .test-stat {
+            text-align: center;
+        }
+
+        .test-stat-value {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .test-stat-label {
+            color: #666;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+
+        .stat-passed {
+            color: #28a745;
+        }
+
+        .stat-failed {
+            color: #dc3545;
+        }
+
+        .logs-section {
+            grid-column: 1 / -1;
+        }
+
+        .log-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+
+        .log-filter {
+            padding: 8px 15px;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            background: white;
+            color: #667eea;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .log-filter.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .log-container {
+            background: #1e1e1e;
+            border-radius: 10px;
+            padding: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 5px;
+            border-radius: 4px;
+        }
+
+        .log-timestamp {
+            color: #888;
+            margin-right: 10px;
+        }
+
+        .log-level {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            margin-right: 10px;
+            display: inline-block;
+            min-width: 60px;
+            text-align: center;
+        }
+
+        .log-info { background: #0066cc; color: white; }
+        .log-success { background: #28a745; color: white; }
+        .log-warning { background: #ffc107; color: #333; }
+        .log-error { background: #dc3545; color: white; }
+
+        .log-message {
+            color: #e0e0e0;
+        }
+
+        .refresh-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: #28a745;
+            border-radius: 50%;
+            margin-left: 10px;
+            animation: blink 2s infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        .last-updated {
+            color: #666;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            background: #667eea;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .empty-state-icon {
+            font-size: 64px;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🦓 ZAP Test Bed Dashboard</h1>
+            <p class="subtitle">Zebra Automation Platform - Real-time Monitoring & Status</p>
+        </header>
+
+        <div class="dashboard-grid">
+            <!-- Test Bed Status -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon">🖥️</div>
+                    <div class="card-title">Test Bed Status</div>
+                </div>
+                <div id="testbed-content">
+                    <div class="info-row">
+                        <span class="info-label">Status</span>
+                        <span class="info-value">
+                            <span class="status-indicator status-online"></span>
+                            Loading...
+                        </span>
+                    </div>
+                </div>
+                <div class="last-updated" id="testbed-updated">Last updated: --</div>
+            </div>
+
+            <!-- Connected Devices -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon">📱</div>
+                    <div class="card-title">Connected Devices</div>
+                </div>
+                <div id="devices-content">
+                    <div class="no-devices">Loading devices...</div>
+                </div>
+            </div>
+
+            <!-- Test Execution Status -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon">🧪</div>
+                    <div class="card-title">Test Execution</div>
+                </div>
+                <div id="test-execution-content">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">⏸️</div>
+                        <p>No tests currently running</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Section -->
+            <div class="card logs-section">
+                <div class="card-header">
+                    <div class="card-icon">📋</div>
+                    <div class="card-title">System Logs<span class="refresh-indicator"></span></div>
+                </div>
+                <div class="log-controls">
+                    <button class="log-filter active" data-level="all">All</button>
+                    <button class="log-filter" data-level="info">Info</button>
+                    <button class="log-filter" data-level="success">Success</button>
+                    <button class="log-filter" data-level="warning">Warning</button>
+                    <button class="log-filter" data-level="error">Error</button>
+                    <button onclick="downloadLogs()">💾 Download Logs</button>
+                </div>
+                <div class="log-container" id="logs-content">
+                    <div style="color: #888;">Loading logs...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentLogFilter = 'all';
+
+        // Fetch and update test bed status
+        async function updateTestBedStatus() {
+            try {
+                const response = await fetch('/api/testbed');
+                const data = await response.json();
+
+                const statusClass = data.online ? 'status-online' : 'status-offline';
+                const statusText = data.online ? 'Online' : 'Offline';
+
+                document.getElementById('testbed-content').innerHTML = `
+                    <div class="info-row">
+                        <span class="info-label">Status</span>
+                        <span class="info-value">
+                            <span class="status-indicator ${statusClass}"></span>
+                            ${statusText}
+                        </span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">IP Address</span>
+                        <span class="info-value">${data.ip_address}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Hostname</span>
+                        <span class="info-value">${data.hostname}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">ZAP Version</span>
+                        <span class="info-value">${data.zap_version}</span>
+                    </div>
+                `;
+
+                const updateTime = new Date(data.last_updated).toLocaleString();
+                document.getElementById('testbed-updated').textContent = `Last updated: ${updateTime}`;
+            } catch (error) {
+                console.error('Error fetching test bed status:', error);
+            }
+        }
+
+        // Fetch and update devices
+        async function updateDevices() {
+            try {
+                const response = await fetch('/api/devices');
+                const data = await response.json();
+
+                const container = document.getElementById('devices-content');
+
+                if (data.devices.length === 0) {
+                    container.innerHTML = '<div class="no-devices">No devices connected</div>';
+                } else {
+                    container.innerHTML = data.devices.map(device => `
+                        <div class="device-card">
+                            <div class="device-name">
+                                <span class="status-indicator ${device.status === 'online' ? 'status-online' : 'status-offline'}"></span>
+                                ${device.model || 'Unknown Model'}
+                            </div>
+                            <div class="device-serial">Serial: ${device.serial}</div>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Error fetching devices:', error);
+            }
+        }
+
+        // Fetch and update test execution status
+        async function updateTestExecution() {
+            try {
+                const response = await fetch('/api/test-execution');
+                const data = await response.json();
+
+                const container = document.getElementById('test-execution-content');
+
+                if (!data.in_progress) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">⏸️</div>
+                            <p>No tests currently running</p>
+                        </div>
+                    `;
+                } else {
+                    const total = data.total_tests;
+                    const completed = data.passed + data.failed;
+                    const progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+                    container.innerHTML = `
+                        <div class="test-progress">
+                            <div class="info-row">
+                                <span class="info-label">Test Suite</span>
+                                <span class="info-value">${data.test_name}</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Status</span>
+                                <span class="info-value">
+                                    <span class="status-indicator status-busy"></span>
+                                    Running
+                                </span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Devices in Use</span>
+                                <span class="info-value">${data.devices_in_use.join(', ')}</span>
+                            </div>
+                            ${data.current_test ? `
+                            <div class="info-row">
+                                <span class="info-label">Current Test</span>
+                                <span class="info-value">${data.current_test}</span>
+                            </div>
+                            ` : ''}
+                            <div class="progress-bar-container">
+                                <div class="progress-bar" style="width: ${progress}%">
+                                    ${progress}%
+                                </div>
+                            </div>
+                            <div class="test-stats">
+                                <div class="test-stat">
+                                    <div class="test-stat-value stat-passed">${data.passed}</div>
+                                    <div class="test-stat-label">Passed</div>
+                                </div>
+                                <div class="test-stat">
+                                    <div class="test-stat-value stat-failed">${data.failed}</div>
+                                    <div class="test-stat-label">Failed</div>
+                                </div>
+                                <div class="test-stat">
+                                    <div class="test-stat-value">${total}</div>
+                                    <div class="test-stat-label">Total</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Error fetching test execution:', error);
+            }
+        }
+
+        // Fetch and update logs
+        async function updateLogs() {
+            try {
+                const response = await fetch(`/api/logs?level=${currentLogFilter}&limit=50`);
+                const data = await response.json();
+
+                const container = document.getElementById('logs-content');
+
+                if (data.logs.length === 0) {
+                    container.innerHTML = '<div style="color: #888;">No logs available</div>';
+                } else {
+                    container.innerHTML = data.logs.map(log => {
+                        const time = new Date(log.timestamp).toLocaleTimeString();
+                        return `
+                            <div class="log-entry">
+                                <span class="log-timestamp">[${time}]</span>
+                                <span class="log-level log-${log.level}">${log.level.toUpperCase()}</span>
+                                <span class="log-message">${log.message}</span>
+                            </div>
+                        `;
+                    }).join('');
+
+                    // Auto-scroll to bottom
+                    container.scrollTop = container.scrollHeight;
+                }
+            } catch (error) {
+                console.error('Error fetching logs:', error);
+            }
+        }
+
+        // Download logs as JSON
+        async function downloadLogs() {
+            try {
+                const response = await fetch('/api/logs/download');
+                const data = await response.json();
+
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `zap_logs_${new Date().toISOString().split('T')[0]}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                console.error('Error downloading logs:', error);
+            }
+        }
+
+        // Setup log filter buttons
+        document.querySelectorAll('.log-filter').forEach(button => {
+            button.addEventListener('click', () => {
+                document.querySelectorAll('.log-filter').forEach(b => b.classList.remove('active'));
+                button.classList.add('active');
+                currentLogFilter = button.getAttribute('data-level');
+                updateLogs();
+            });
+        });
+
+        // Initial load
+        updateTestBedStatus();
+        updateDevices();
+        updateTestExecution();
+        updateLogs();
+
+        // Auto-refresh every 2 seconds
+        setInterval(() => {
+            updateTestBedStatus();
+            updateDevices();
+            updateTestExecution();
+            updateLogs();
+        }, 2000);
+    </script>
+</body>
+</html>
+
