@@ -1,5 +1,12 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext, font
+import sys
+import os
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.tooltip import add_tooltip
 
 class App(tk.Tk):
     def __init__(self):
@@ -152,6 +159,12 @@ class App(tk.Tk):
 
         # Log Display (Left Column)
         self._create_log_section(left_column)
+
+        # Status Bar (Bottom)
+        self._create_status_bar()
+
+        # Setup tooltips for all widgets
+        self._setup_tooltips()
 
     def _create_monitoring_section(self, parent):
         """Create the device monitoring panel"""
@@ -404,6 +417,30 @@ class App(tk.Tk):
         self.flash_device_dropdown.pack(side=tk.LEFT, ipady=2)
         self.flash_device_dropdown['values'] = ['']  # Will be updated by monitoring daemon
 
+        # Progress bar and label (initially hidden)
+        progress_container = tk.Frame(jfrog_frame, bg=self.colors['card_bg'])
+        progress_container.pack(fill=tk.X, pady=(5, 10))
+
+        self.progress_bar = ttk.Progressbar(
+            progress_container,
+            mode='determinate',
+            length=300
+        )
+        self.progress_bar.pack(fill=tk.X, pady=(0, 5))
+
+        self.progress_label = tk.Label(
+            progress_container,
+            text="",
+            font=('Segoe UI', 8),
+            bg=self.colors['card_bg'],
+            fg=self.colors['text_light']
+        )
+        self.progress_label.pack(fill=tk.X)
+
+        # Hide progress initially
+        progress_container.pack_forget()
+        self.progress_container = progress_container
+
         # Build URL input section
         url_input_frame = tk.Frame(jfrog_frame, bg=self.colors['card_bg'])
         url_input_frame.pack(fill=tk.X, pady=(5, 10))
@@ -471,11 +508,209 @@ class App(tk.Tk):
                                  relief='solid', bd=1, padx=15, pady=10)
         log_frame.pack(fill=tk.X, pady=(0, 15))
 
+        # Log controls
+        controls_frame = tk.Frame(log_frame, bg=self.colors['card_bg'])
+        controls_frame.pack(fill=tk.X, pady=(0, 8))
+
+        # Log level filter
+        tk.Label(controls_frame, text="Show:", bg=self.colors['card_bg'],
+                font=('Segoe UI', 8)).pack(side=tk.LEFT, padx=(0, 5))
+
+        self.log_level_var = tk.StringVar(value='all')
+        levels = [('All', 'all'), ('Info', 'info'), ('Success', 'success'), ('Errors', 'error')]
+
+        for text, level in levels:
+            tk.Radiobutton(
+                controls_frame,
+                text=text,
+                variable=self.log_level_var,
+                value=level,
+                bg=self.colors['card_bg'],
+                font=('Segoe UI', 8),
+                selectcolor=self.colors['card_bg']
+            ).pack(side=tk.LEFT, padx=2)
+
+        # Search box
+        tk.Label(controls_frame, text="Search:", bg=self.colors['card_bg'],
+                font=('Segoe UI', 8)).pack(side=tk.LEFT, padx=(15, 5))
+        self.log_search_entry = tk.Entry(controls_frame, width=15, font=('Segoe UI', 8))
+        self.log_search_entry.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Auto-scroll checkbox
+        self.auto_scroll = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            controls_frame,
+            text="Auto-scroll",
+            variable=self.auto_scroll,
+            bg=self.colors['card_bg'],
+            font=('Segoe UI', 8),
+            selectcolor=self.colors['card_bg']
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Export button
+        self.export_logs_button = tk.Button(
+            controls_frame,
+            text="💾 Export",
+            font=('Segoe UI', 8),
+            bg=self.colors['primary'],
+            fg='white',
+            relief='flat',
+            cursor='hand2',
+            padx=8,
+            pady=2
+        )
+        self.export_logs_button.pack(side=tk.RIGHT, padx=2)
+
+        # Clear button
+        self.clear_logs_button = tk.Button(
+            controls_frame,
+            text="🗑️ Clear",
+            font=('Segoe UI', 8),
+            bg='#6c757d',
+            fg='white',
+            relief='flat',
+            cursor='hand2',
+            padx=8,
+            pady=2
+        )
+        self.clear_logs_button.pack(side=tk.RIGHT, padx=2)
+
+        # Log text area
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=12,
                                                   font=('Consolas', 9), bg='#ffffff', fg='#212529',
                                                   relief='solid', bd=1, padx=8, pady=8,
                                                   insertbackground='#212529')
         self.log_text.pack(fill=tk.BOTH, expand=True)
+
+    def _create_status_bar(self):
+        """Create status bar at the bottom of the window"""
+        self.status_bar = tk.Label(
+            self,
+            text="✅ Ready",
+            bg='#e9ecef',
+            fg=self.colors['text'],
+            anchor='w',
+            padx=15,
+            pady=8,
+            font=('Segoe UI', 9),
+            relief='flat',
+            bd=1
+        )
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X, before=self.winfo_children()[0])
+
+    def update_status_bar(self, message):
+        """Update status bar message"""
+        self.status_bar.config(text=message)
+
+    def show_toast(self, message, type='info', duration=3000):
+        """Show toast notification
+
+        Args:
+            message: Message to display
+            type: 'info', 'success', 'error', or 'warning'
+            duration: Duration in milliseconds
+        """
+        toast = tk.Toplevel(self)
+        toast.withdraw()
+        toast.overrideredirect(True)
+
+        # Position at bottom right
+        x = self.winfo_x() + self.winfo_width() - 320
+        y = self.winfo_y() + self.winfo_height() - 120
+        toast.geometry(f"300x80+{x}+{y}")
+
+        colors = {
+            'success': ('#28a745', '✅'),
+            'error': ('#dc3545', '❌'),
+            'warning': ('#ffc107', '⚠️'),
+            'info': ('#0066cc', 'ℹ️')
+        }
+
+        bg_color, icon = colors.get(type, colors['info'])
+
+        frame = tk.Frame(toast, bg=bg_color, padx=15, pady=10)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(frame, text=f"{icon} {message}", bg=bg_color, fg='white',
+                font=('Segoe UI', 10), wraplength=250, justify='left').pack()
+
+        toast.deiconify()
+        toast.lift()
+        toast.after(duration, toast.destroy)
+
+    def update_progress(self, current, total, operation="Operation"):
+        """Update progress bar and label
+
+        Args:
+            current: Current progress value (bytes)
+            total: Total value (bytes)
+            operation: Operation description
+        """
+        if not hasattr(self, 'progress_container'):
+            return
+
+        # Show progress container if hidden
+        if not self.progress_container.winfo_ismapped():
+            self.progress_container.pack(fill=tk.X, pady=(5, 10), after=self.flash_device_dropdown.master)
+
+        percentage = (current / total) * 100 if total > 0 else 0
+        self.progress_bar['value'] = percentage
+
+        current_mb = current / 1024 / 1024
+        total_mb = total / 1024 / 1024
+
+        self.progress_label.config(
+            text=f"{operation}... {current_mb:.1f} MB / {total_mb:.1f} MB ({percentage:.1f}%)"
+        )
+        self.update_idletasks()
+
+    def hide_progress(self):
+        """Hide progress bar"""
+        if hasattr(self, 'progress_container'):
+            self.progress_container.pack_forget()
+            self.progress_bar['value'] = 0
+            self.progress_label.config(text="")
+
+    def _setup_tooltips(self):
+        """Add helpful tooltips to all buttons and inputs"""
+        # Polarion section
+        add_tooltip(self.polarion_url_entry,
+                   "Enter the full Polarion test run URL\nExample: https://polarion.zebra.com/...")
+        add_tooltip(self.download_sttls_button,
+                   "Download test cases from Polarion\nShortcut: Ctrl+Enter")
+
+        # Zybot section
+        for i, (dut, dropdown) in enumerate(self.device_dropdowns.items(), 1):
+            add_tooltip(dropdown,
+                       f"Select device for {dut}\nDevices are detected via ADB")
+        add_tooltip(self.run_zybot_button,
+                   "Execute Zybot tests on selected devices\nShortcut: F5\n\n⚠️ STTLs must be downloaded first")
+
+        # JFrog section
+        add_tooltip(self.flash_device_dropdown,
+                   "Select target device for flashing\nOnly connected devices appear here")
+        add_tooltip(self.jfrog_link_entry,
+                   "Enter JFrog Artifactory build URL")
+        add_tooltip(self.download_build_button,
+                   "Download build without flashing\nShortcut: Ctrl+D")
+        add_tooltip(self.download_flash_button,
+                   "Download and immediately flash to device\n\n⚠️ This will erase device data!")
+        add_tooltip(self.browse_button,
+                   "Browse for local build file\nShortcut: Ctrl+O")
+        add_tooltip(self.flash_local_button,
+                   "Flash local build file to device\n\n⚠️ This will erase device data!")
+
+        # Monitoring section
+        add_tooltip(self.kill_button,
+                   "Terminate current operation\nShortcut: Esc\n\n⚠️ May leave incomplete files")
+
+        # Log controls
+        add_tooltip(self.log_search_entry,
+                   "Search logs for specific text")
+        add_tooltip(self.clear_logs_button,
+                   "Clear all log messages\nShortcut: Ctrl+L")
+        add_tooltip(self.export_logs_button,
+                   "Export logs to text file\nShortcut: Ctrl+S")
 
     def update_device_dropdowns(self, devices):
         """Update the device dropdown options"""

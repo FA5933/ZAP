@@ -1,8 +1,9 @@
 import tkinter as tk  # Required for tk.END constant
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 import configparser
-from threading import Thread
+from threading import Thread, Event
 import os
+import json
 
 from gui.main_window import App
 from core.monitoring import MonitorDaemon
@@ -19,7 +20,7 @@ class MainApplication:
         self.config.read(config_path)
 
         self.app = App()
-        self.logger = Logger(self.app.log_text)
+        self.logger = Logger(self.app.log_text, self.app.auto_scroll)
 
         self.polarion_manager = PolarionManager(self.config, self.logger)
         self.zybot_executor = ZybotExecutor(self.config, self.logger)
@@ -30,8 +31,12 @@ class MainApplication:
         self.monitor_daemon.start()
 
         self.current_thread = None
+        self.stop_event = Event()  # For graceful thread cancellation
 
         self.setup_callbacks()
+        self.setup_keyboard_shortcuts()
+        self.setup_placeholders()
+        self.restore_session_state()
 
     def setup_callbacks(self):
         self.app.download_sttls_button.config(command=self.run_download_sttls)
@@ -43,12 +48,18 @@ class MainApplication:
         self.app.browse_button.config(command=self.browse_local_file)
         self.app.flash_local_button.config(command=self.run_flash_local_build)
 
-        self.app.kill_button.config(command=self.kill_current_process)
+        self.app.kill_button.config(command=self.kill_with_confirmation)
 
         # Add callbacks for device dropdowns to update the command
         for dropdown in self.app.device_dropdowns.values():
             dropdown.bind("<<ComboboxSelected>>", self.update_zybot_command_display)
         self.app.polarion_url_entry.bind("<KeyRelease>", self.update_zybot_command_display)
+
+        # Log controls callbacks
+        self.app.clear_logs_button.config(command=self.clear_logs)
+        self.app.export_logs_button.config(command=self.export_logs)
+        self.app.log_level_var.trace('w', lambda *args: self.filter_logs())
+        self.app.log_search_entry.bind('<KeyRelease>', lambda e: self.search_logs())
 
     def update_zybot_command_display(self, event=None):
         polarion_run_name = self.app.polarion_url_entry.get().split('/')[-1]
@@ -63,38 +74,77 @@ class MainApplication:
         self.app.zybot_command_text.configure(state='disabled')
 
     def run_download_sttls(self):
+        if not self.validate_polarion_input():
+            return
+
+        self.disable_action_buttons()
+        self.stop_event.clear()
         self.current_thread = Thread(target=self._download_sttls_thread)
         self.current_thread.start()
 
     def _download_sttls_thread(self):
-        test_run_url = self.app.polarion_url_entry.get()
-        if not test_run_url:
-            self.logger.log("Polarion Test Run URL is required.", level='error')
-            return
-        self.sttls = self.polarion_manager.download_sttls(test_run_url)
-        self.update_zybot_command_display()
+        try:
+            test_run_url = self.app.polarion_url_entry.get()
+            if self.app.polarion_url_entry.cget('fg') == '#999999':
+                self.logger.log("Polarion Test Run URL is required.", level='error')
+                return
+
+            self.sttls = self.polarion_manager.download_sttls(test_run_url)
+
+            if self.sttls:
+                self.update_zybot_command_display()
+                self.app.show_toast(f"✅ Downloaded {len(self.sttls)} STTLs", 'success')
+                self.save_session_state()
+            else:
+                self.app.show_toast("⚠️ No STTLs found", 'warning')
+        except Exception as e:
+            self.logger.log(f"Error downloading STTLs: {e}", level='error')
+            self.app.show_toast("❌ Download failed", 'error')
+        finally:
+            self.enable_action_buttons()
 
     def run_zybot_tests(self):
+        if not self.validate_zybot_config():
+            return
+
+        self.disable_action_buttons()
+        self.stop_event.clear()
         self.current_thread = Thread(target=self._run_zybot_tests_thread)
         self.current_thread.start()
 
     def _run_zybot_tests_thread(self):
-        polarion_run_name = self.app.polarion_url_entry.get().split('/')[-1]
-        devices = {dut: dropdown.get() for dut, dropdown in self.app.device_dropdowns.items()}
+        try:
+            polarion_run_name = self.app.polarion_url_entry.get().split('/')[-1]
+            devices = {dut: dropdown.get() for dut, dropdown in self.app.device_dropdowns.items()}
 
-        if not hasattr(self, 'sttls') or not self.sttls:
-            self.logger.log("No STTLs downloaded. Please download STTLs first.", level='error')
-            return
+            if not hasattr(self, 'sttls') or not self.sttls:
+                self.logger.log("No STTLs downloaded. Please download STTLs first.", level='error')
+                return
 
-        result = self.zybot_executor.run_tests(polarion_run_name, devices, self.sttls)
+            result = self.zybot_executor.run_tests(polarion_run_name, devices, self.sttls, self.stop_event)
 
-        self.polarion_manager.upload_results(self.app.polarion_url_entry.get(), {"result": result})
+            if self.stop_event.is_set():
+                self.logger.log("⚠️ Test execution cancelled by user", level='warning')
+                self.app.show_toast("⚠️ Test cancelled", 'warning')
+                return
 
-        subject = f"Test Run {polarion_run_name} Completed"
-        body = f"The test run has completed with status: {result}."
-        self.email_notifier.send_notification(subject, body)
+            self.polarion_manager.upload_results(self.app.polarion_url_entry.get(), {"result": result})
 
-        self.artifactory_manager.upload_logs(self.logger.log_file)
+            subject = f"Test Run {polarion_run_name} Completed"
+            body = f"The test run has completed with status: {result}."
+            self.email_notifier.send_notification(subject, body)
+
+            self.artifactory_manager.upload_logs(self.logger.log_file)
+
+            if result == "Pass":
+                self.app.show_toast("✅ Tests completed successfully!", 'success')
+            else:
+                self.app.show_toast("❌ Tests failed", 'error')
+        except Exception as e:
+            self.logger.log(f"Error during test execution: {e}", level='error')
+            self.app.show_toast("❌ Test execution failed", 'error')
+        finally:
+            self.enable_action_buttons()
 
     def _get_selected_device_serial(self):
         """Extract device serial from the selected flash device dropdown value
@@ -112,35 +162,76 @@ class MainApplication:
 
     def run_download_build(self):
         """Download build only without flashing"""
+        if not self.validate_artifactory_input(requires_device=False):
+            return
+
+        self.disable_action_buttons()
+        self.stop_event.clear()
         self.current_thread = Thread(target=self._download_build_thread)
         self.current_thread.start()
 
     def _download_build_thread(self):
-        build_link = self.app.jfrog_link_entry.get()
-        if not build_link:
-            self.logger.log("JFrog build URL is required.", level='error')
-            return
-        downloaded_file = self.artifactory_manager.download_build(build_link)
-        if downloaded_file:
-            self.logger.log(f"✅ Download complete. File saved to: {downloaded_file}", level='success')
+        try:
+            build_link = self.app.jfrog_link_entry.get()
+            if self.app.jfrog_link_entry.cget('fg') == '#999999':
+                self.logger.log("JFrog build URL is required.", level='error')
+                return
+
+            downloaded_file = self.artifactory_manager.download_build(build_link, self.stop_event, self.app)
+
+            if self.stop_event.is_set():
+                self.logger.log("⚠️ Download cancelled by user", level='warning')
+                self.app.show_toast("⚠️ Download cancelled", 'warning')
+                return
+
+            if downloaded_file:
+                self.logger.log(f"✅ Download complete. File saved to: {downloaded_file}", level='success')
+                self.app.show_toast("✅ Build downloaded!", 'success')
+        except Exception as e:
+            self.logger.log(f"Error downloading build: {e}", level='error')
+            self.app.show_toast("❌ Download failed", 'error')
+        finally:
+            self.enable_action_buttons()
 
     def run_download_and_flash_build(self):
         """Download and immediately flash the build"""
+        if not self.validate_artifactory_input(requires_device=True):
+            return
+
+        device = self.app.flash_device_dropdown.get()
+        if not self.confirm_flash_operation(device, "download and flash"):
+            return
+
+        self.disable_action_buttons()
+        self.stop_event.clear()
         self.current_thread = Thread(target=self._download_and_flash_thread)
         self.current_thread.start()
 
     def _download_and_flash_thread(self):
-        build_link = self.app.jfrog_link_entry.get()
-        if not build_link:
-            self.logger.log("JFrog build URL is required.", level='error')
-            return
+        try:
+            build_link = self.app.jfrog_link_entry.get()
+            if self.app.jfrog_link_entry.cget('fg') == '#999999':
+                self.logger.log("JFrog build URL is required.", level='error')
+                return
 
-        device_serial = self._get_selected_device_serial()
-        if not device_serial:
-            self.logger.log("Please select a target device.", level='error')
-            return
+            device_serial = self._get_selected_device_serial()
+            if not device_serial:
+                self.logger.log("Please select a target device.", level='error')
+                return
 
-        self.artifactory_manager.download_and_flash_build(build_link, device_serial)
+            self.artifactory_manager.download_and_flash_build(build_link, device_serial, self.stop_event, self.app)
+
+            if self.stop_event.is_set():
+                self.logger.log("⚠️ Operation cancelled by user", level='warning')
+                self.app.show_toast("⚠️ Operation cancelled", 'warning')
+                return
+
+            self.app.show_toast("✅ Flash completed!", 'success')
+        except Exception as e:
+            self.logger.log(f"Error during download/flash: {e}", level='error')
+            self.app.show_toast("❌ Flash failed", 'error')
+        finally:
+            self.enable_action_buttons()
 
     def browse_local_file(self):
         """Open file browser to select a local build file"""
@@ -158,34 +249,406 @@ class MainApplication:
 
     def run_flash_local_build(self):
         """Flash an existing local build file"""
+        file_path = self.app.local_file_entry.get()
+        if self.app.local_file_entry.cget('fg') == '#999999' or not file_path:
+            messagebox.showerror("File Required", "Please select a local build file.")
+            return
+
+        device = self.app.flash_device_dropdown.get()
+        if not device:
+            messagebox.showerror("Device Required",
+                               "Please select a target device from the dropdown.")
+            return
+
+        if not self.confirm_flash_operation(device, "flash"):
+            return
+
+        self.disable_action_buttons()
+        self.stop_event.clear()
         self.current_thread = Thread(target=self._flash_local_thread)
         self.current_thread.start()
 
     def _flash_local_thread(self):
-        file_path = self.app.local_file_entry.get()
-        if not file_path:
-            self.logger.log("Please select a local build file.", level='error')
-            return
+        try:
+            file_path = self.app.local_file_entry.get()
+            if not file_path or not os.path.exists(file_path):
+                self.logger.log("Please select a valid local build file.", level='error')
+                return
 
-        device_serial = self._get_selected_device_serial()
-        if not device_serial:
-            self.logger.log("Please select a target device.", level='error')
-            return
+            device_serial = self._get_selected_device_serial()
+            if not device_serial:
+                self.logger.log("Please select a target device.", level='error')
+                return
 
-        self.artifactory_manager.flash_build(file_path, device_serial)
+            self.artifactory_manager.flash_build(file_path, device_serial, self.stop_event, self.app)
+
+            if self.stop_event.is_set():
+                self.logger.log("⚠️ Flash cancelled by user", level='warning')
+                self.app.show_toast("⚠️ Flash cancelled", 'warning')
+                return
+
+            self.app.show_toast("✅ Flash completed!", 'success')
+        except Exception as e:
+            self.logger.log(f"Error during flash: {e}", level='error')
+            self.app.show_toast("❌ Flash failed", 'error')
+        finally:
+            self.enable_action_buttons()
 
     def kill_current_process(self):
+        """Request graceful thread termination"""
         if self.current_thread and self.current_thread.is_alive():
-            # This is a bit of a hack. In a real application, you'd want a more graceful
-            # way to stop the thread, e.g., by using a shared flag.
-            # For now, we can't directly kill a thread in Python, so we'll just log it.
-            self.logger.log("Termination request received. Note: Cannot forcefully kill a running thread.", level='error')
-            # In a more complex app, you might try to raise an exception in the thread
-            # or use other mechanisms to signal it to stop.
+            self.stop_event.set()
+            self.logger.log("⚠️ Termination requested. Attempting to stop operation gracefully...", level='warning')
+            # Re-enable buttons after a short delay
+            self.app.after(2000, self.enable_action_buttons)
+        else:
+            self.logger.log("No active operation to terminate.", level='info')
+
+    # ===== BUTTON STATE MANAGEMENT =====
+
+    def disable_action_buttons(self):
+        """Disable all action buttons during operations"""
+        self.app.download_sttls_button.config(state='disabled', bg='#a0a0a0')
+        self.app.run_zybot_button.config(state='disabled', bg='#a0a0a0')
+        self.app.download_build_button.config(state='disabled', bg='#a0a0a0')
+        self.app.download_flash_button.config(state='disabled', bg='#a0a0a0')
+        self.app.browse_button.config(state='disabled', bg='#a0a0a0')
+        self.app.flash_local_button.config(state='disabled', bg='#a0a0a0')
+        self.app.update_status_bar("⏳ Operation in progress...")
+
+    def enable_action_buttons(self):
+        """Re-enable action buttons after operation completes"""
+        self.app.download_sttls_button.config(state='normal', bg=self.app.colors['primary'])
+        self.app.run_zybot_button.config(state='normal', bg=self.app.colors['success'])
+        self.app.download_build_button.config(state='normal', bg=self.app.colors['primary'])
+        self.app.download_flash_button.config(state='normal', bg=self.app.colors['warning'])
+        self.app.browse_button.config(state='normal', bg='#6c757d')
+        self.app.flash_local_button.config(state='normal', bg=self.app.colors['success'])
+        self.app.update_status_bar("✅ Ready")
+
+    # ===== INPUT VALIDATION =====
+
+    def validate_polarion_input(self):
+        """Validate Polarion URL before download"""
+        url = self.app.polarion_url_entry.get().strip()
+
+        if not url:
+            messagebox.showerror("Polarion URL Required",
+                               "Please enter a Polarion test run URL.")
+            return False
+
+        if not url.startswith('http'):
+            messagebox.showwarning("Invalid URL",
+                                 "URL should start with 'http://' or 'https://'")
+            return False
+
+        return True
+
+    def validate_zybot_config(self):
+        """Validate Zybot configuration before execution"""
+        # Check if STTLs are downloaded
+        if not hasattr(self, 'sttls') or not self.sttls:
+            messagebox.showerror("STTLs Not Downloaded",
+                               "Please download STTLs from Polarion first.\n\n"
+                               "Click 'Download STTLs' button to fetch test cases.")
+            return False
+
+        # Check if at least one device is selected
+        selected_devices = [d.get() for d in self.app.device_dropdowns.values() if d.get()]
+        if not selected_devices:
+            messagebox.showerror("No Devices Selected",
+                               "Please select at least one device for testing.\n\n"
+                               "Devices must be connected via ADB.")
+            return False
+
+        return True
+
+    def validate_artifactory_input(self, requires_device=False):
+        """Validate Artifactory inputs"""
+        url = self.app.jfrog_link_entry.get().strip()
+        device = self.app.flash_device_dropdown.get()
+
+        if not url:
+            messagebox.showerror("Build URL Required",
+                               "Please enter a JFrog Artifactory build URL.")
+            return False
+
+        if requires_device and not device:
+            messagebox.showerror("Device Required",
+                               "Please select a target device from the dropdown.\n\n"
+                               "Make sure a device is connected via ADB.")
+            return False
+
+        return True
+
+    # ===== CONFIRMATION DIALOGS =====
+
+    def kill_with_confirmation(self):
+        """Confirm before killing process"""
+        if not self.current_thread or not self.current_thread.is_alive():
+            messagebox.showinfo("No Active Operation",
+                              "There is no operation currently running.")
+            return
+
+        result = messagebox.askyesno(
+            "Confirm Kill Process",
+            "This will terminate the running operation.\n\n"
+            "⚠️ Progress may be lost and files could be corrupted.\n\n"
+            "Are you sure you want to stop?",
+            icon='warning'
+        )
+
+        if result:
+            self.kill_current_process()
+
+    def confirm_flash_operation(self, device, operation_type="flash"):
+        """Ask for confirmation before flashing"""
+        result = messagebox.askyesno(
+            "Confirm Flash Operation",
+            f"⚠️ WARNING: This will {operation_type} the build to:\n\n"
+            f"   {device}\n\n"
+            f"All data on the device may be erased.\n"
+            f"This operation cannot be undone.\n\n"
+            f"Do you want to continue?",
+            icon='warning'
+        )
+        return result
+
+    # ===== KEYBOARD SHORTCUTS =====
+
+    def setup_keyboard_shortcuts(self):
+        """Bind keyboard shortcuts"""
+        # File operations
+        self.app.bind('<Control-o>', lambda e: self.browse_local_file())
+        self.app.bind('<Control-d>', lambda e: self.run_download_build())
+
+        # Execution
+        self.app.bind('<F5>', lambda e: self.run_zybot_tests())
+        self.app.bind('<Control-Return>', lambda e: self.run_download_sttls())
+
+        # Emergency
+        self.app.bind('<Escape>', lambda e: self.kill_with_confirmation())
+
+        # Utility
+        self.app.bind('<Control-l>', lambda e: self.clear_logs())
+        self.app.bind('<Control-s>', lambda e: self.export_logs())
+        self.app.bind('<Control-question>', lambda e: self.show_keyboard_shortcuts())
+        self.app.bind('<F1>', lambda e: self.show_keyboard_shortcuts())
+
+    def show_keyboard_shortcuts(self):
+        """Display keyboard shortcuts help dialog"""
+        shortcuts = """
+🎹 KEYBOARD SHORTCUTS
+
+File Operations:
+  Ctrl+O          Open/Browse local file
+  Ctrl+D          Download build
+
+Execution:
+  F5              Run Zybot Tests
+  Ctrl+Enter      Download STTLs
+
+Emergency:
+  Esc             Kill current process
+
+Utility:
+  Ctrl+L          Clear logs
+  Ctrl+S          Export logs
+  F1              Show this help
+
+Navigation:
+  Tab             Move between fields
+  Shift+Tab       Move backwards
+        """
+        messagebox.showinfo("Keyboard Shortcuts", shortcuts)
+
+    # ===== PLACEHOLDER TEXT =====
+
+    def setup_placeholders(self):
+        """Add placeholder text to input fields"""
+        self._add_placeholder(self.app.polarion_url_entry,
+                            "https://polarion.zebra.com/...")
+        self._add_placeholder(self.app.jfrog_link_entry,
+                            "https://artifactory.zebra.com/...")
+        self._add_placeholder(self.app.local_file_entry,
+                            "Select a local .zip build file...")
+
+    def _add_placeholder(self, entry, placeholder_text):
+        """Add placeholder text to an entry widget"""
+        entry.insert(0, placeholder_text)
+        entry.config(fg='#999999')
+
+        def on_focus_in(event):
+            if entry.get() == placeholder_text:
+                entry.delete(0, tk.END)
+                entry.config(fg='#212529')
+
+        def on_focus_out(event):
+            if not entry.get():
+                entry.insert(0, placeholder_text)
+                entry.config(fg='#999999')
+
+        entry.bind('<FocusIn>', on_focus_in)
+        entry.bind('<FocusOut>', on_focus_out)
+
+    # ===== SESSION PERSISTENCE =====
+
+    def save_session_state(self):
+        """Save current session state"""
+        try:
+            # Get entry values (handle placeholders)
+            polarion_url = self.app.polarion_url_entry.get()
+            if self.app.polarion_url_entry.cget('fg') == '#999999':
+                polarion_url = ''
+
+            jfrog_url = self.app.jfrog_link_entry.get()
+            if self.app.jfrog_link_entry.cget('fg') == '#999999':
+                jfrog_url = ''
+
+            local_file = self.app.local_file_entry.get()
+            if self.app.local_file_entry.cget('fg') == '#999999':
+                local_file = ''
+
+            state = {
+                'polarion_url': polarion_url,
+                'jfrog_url': jfrog_url,
+                'local_file_path': local_file,
+                'selected_devices': {
+                    dut: dropdown.get()
+                    for dut, dropdown in self.app.device_dropdowns.items()
+                },
+                'flash_device': self.app.flash_device_dropdown.get(),
+                'last_sttls': getattr(self, 'sttls', []),
+                'window_size': f"{self.app.winfo_width()}x{self.app.winfo_height()}",
+                'window_position': f"+{self.app.winfo_x()}+{self.app.winfo_y()}"
+            }
+
+            session_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                       'session_state.json')
+            with open(session_file, 'w') as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            self.logger.log(f"Could not save session state: {e}", level='error')
+
+    def restore_session_state(self):
+        """Restore previous session state"""
+        try:
+            session_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                       'session_state.json')
+
+            if not os.path.exists(session_file):
+                return
+
+            with open(session_file, 'r') as f:
+                state = json.load(f)
+
+            # Restore URLs (clear placeholder first)
+            if state.get('polarion_url'):
+                self.app.polarion_url_entry.delete(0, tk.END)
+                self.app.polarion_url_entry.insert(0, state['polarion_url'])
+                self.app.polarion_url_entry.config(fg='#212529')
+
+            if state.get('jfrog_url'):
+                self.app.jfrog_link_entry.delete(0, tk.END)
+                self.app.jfrog_link_entry.insert(0, state['jfrog_url'])
+                self.app.jfrog_link_entry.config(fg='#212529')
+
+            if state.get('local_file_path'):
+                self.app.local_file_entry.delete(0, tk.END)
+                self.app.local_file_entry.insert(0, state['local_file_path'])
+                self.app.local_file_entry.config(fg='#212529')
+
+            # Restore STTLs
+            if state.get('last_sttls'):
+                self.sttls = state['last_sttls']
+                self.update_zybot_command_display()
+
+            # Restore window geometry
+            geometry = state.get('window_size', '') + state.get('window_position', '')
+            if geometry and '+' in geometry:
+                try:
+                    self.app.geometry(geometry)
+                except:
+                    pass  # Invalid geometry, skip
+
+            self.logger.log("✅ Session restored from previous run", level='success')
+        except Exception as e:
+            pass  # First run or corrupted state file
+
+    # ===== LOG MANAGEMENT =====
+
+    def clear_logs(self):
+        """Clear all logs"""
+        result = messagebox.askyesno("Clear Logs",
+                                    "Are you sure you want to clear all logs?\n\n"
+                                    "This cannot be undone.")
+        if result:
+            self.app.log_text.configure(state='normal')
+            self.app.log_text.delete(1.0, tk.END)
+            self.app.log_text.configure(state='disabled')
+            self.logger.log("📋 Logs cleared", level='info')
+
+    def export_logs(self):
+        """Export logs to a text file"""
+        file_path = filedialog.asksaveasfilename(
+            title="Export Logs",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            initialfile=f"zap_logs_{self.logger.timestamp}.txt"
+        )
+
+        if file_path:
+            try:
+                log_content = self.app.log_text.get(1.0, tk.END)
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(log_content)
+                self.logger.log(f"✅ Logs exported to: {file_path}", level='success')
+                self.app.show_toast(f"Logs exported successfully!", 'success')
+            except Exception as e:
+                self.logger.log(f"❌ Failed to export logs: {e}", level='error')
+
+    def filter_logs(self):
+        """Filter logs by level"""
+        level = self.app.log_level_var.get()
+        # This would require storing log entries with their levels
+        # For now, just log the action
+        if level != 'all':
+            self.logger.log(f"🔍 Filtering logs: showing {level} only", level='info')
+
+    def search_logs(self):
+        """Search logs for text"""
+        search_term = self.app.log_search_entry.get()
+        if not search_term:
+            # Clear any existing highlights
+            self.app.log_text.tag_remove('search_highlight', '1.0', tk.END)
+            return
+
+        # Remove previous highlights
+        self.app.log_text.tag_remove('search_highlight', '1.0', tk.END)
+
+        # Configure highlight tag
+        self.app.log_text.tag_config('search_highlight', background='yellow', foreground='black')
+
+        # Search and highlight
+        start_pos = '1.0'
+        while True:
+            start_pos = self.app.log_text.search(search_term, start_pos, stopindex=tk.END, nocase=True)
+            if not start_pos:
+                break
+            end_pos = f"{start_pos}+{len(search_term)}c"
+            self.app.log_text.tag_add('search_highlight', start_pos, end_pos)
+            start_pos = end_pos
 
     def run(self):
+        # Set up protocol for window close
+        self.app.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.app.mainloop()
         self.monitor_daemon.stop()
+
+    def on_closing(self):
+        """Handle window close event"""
+        self.save_session_state()
+        self.app.destroy()
 
 if __name__ == "__main__":
     main_app = MainApplication()

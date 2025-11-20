@@ -6,7 +6,7 @@ class ZybotExecutor:
         self.config = config
         self.logger = logger
 
-    def run_tests(self, polarion_run_name, devices, sttls):
+    def run_tests(self, polarion_run_name, devices, sttls, stop_event=None):
         command = self.get_command_string(polarion_run_name, devices, sttls)
 
         self.logger.log(f"Executing Zybot command: {command}")
@@ -15,13 +15,18 @@ class ZybotExecutor:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True, text=True)
 
             for line in iter(process.stdout.readline, ''):
+                if stop_event and stop_event.is_set():
+                    process.terminate()
+                    self.logger.log("⚠️ Zybot execution cancelled by user", level='warning')
+                    return "Cancelled"
+
                 self.logger.log(line.strip())
 
             process.stdout.close()
             return_code = process.wait()
 
             if return_code == 0:
-                self.logger.log("Zybot execution completed successfully.")
+                self.logger.log("Zybot execution completed successfully.", level='success')
                 return "Pass"
             else:
                 self.logger.log(f"Zybot execution failed with return code {return_code}.", level='error')

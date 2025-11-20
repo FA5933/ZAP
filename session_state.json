@@ -1,0 +1,15 @@
+{
+  "polarion_url": "aaa",
+  "jfrog_url": "",
+  "local_file_path": "aa",
+  "selected_devices": {
+    "DUT1": "",
+    "DUT2": "",
+    "DUT3": "",
+    "DUT4": ""
+  },
+  "flash_device": "TC26 (210355230D5065)",
+  "last_sttls": [],
+  "window_size": "1920x1009",
+  "window_position": "+1912+-7"
+}

@@ -257,12 +257,14 @@ class ArtifactoryManager:
         if file_path:
             self.flash_build(file_path, device_serial)
 
-    def flash_build(self, file_path, device_serial=None):
+    def flash_build(self, file_path, device_serial=None, stop_event=None, app=None):
         """Flash a build file to connected device
 
         Args:
             file_path: Path to the build file (can be relative or absolute)
             device_serial: Serial number of device to flash (None for first device)
+            stop_event: Threading event for cancellation
+            app: App instance for progress updates
         """
         if not os.path.exists(file_path):
             self.logger.log(f"Build file not found: {file_path}", level='error')
@@ -275,26 +277,80 @@ class ArtifactoryManager:
         else:
             self.logger.log("Target device: First available device")
 
-        # This is a placeholder for the actual flashing logic
-        # For example, using adb sideload
-        # try:
-        #     cmd = ["adb"]
-        #     if device_serial:
-        #         cmd.extend(["-s", device_serial])
-        #     cmd.extend(["sideload", file_path])
-        #
-        #     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        #     self.logger.log(f"Flash output: {result.stdout}")
-        #     self.logger.log("Build flashed successfully!", level='success')
-        # except subprocess.CalledProcessError as e:
-        #     self.logger.log(f"Flash failed: {e.stderr}", level='error')
+        # Actual flashing logic using adb sideload
+        try:
+            # First, reboot to recovery
+            self.logger.log("Rebooting device to recovery mode...")
+            cmd = ["adb"]
+            if device_serial:
+                cmd.extend(["-s", device_serial])
+            cmd.extend(["reboot", "recovery"])
 
-        self.logger.log("Flashing process would be initiated here.")
-        self.logger.log(f"File size: {os.path.getsize(file_path) / (1024*1024):.2f} MB")
+            subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
 
-        # Optionally clean up the downloaded file after flashing
-        # os.remove(file_path)
-        # self.logger.log(f"Cleaned up: {file_path}")
+            # Wait for device to enter recovery
+            self.logger.log("Waiting for device to enter recovery mode...")
+            time.sleep(15)
+
+            # Check for cancellation
+            if stop_event and stop_event.is_set():
+                self.logger.log("⚠️ Flash cancelled by user", level='warning')
+                return
+
+            # Start sideload
+            self.logger.log("Starting sideload...")
+            if app:
+                app.update_progress(0, 100, "Flashing")
+
+            cmd = ["adb"]
+            if device_serial:
+                cmd.extend(["-s", device_serial])
+            cmd.extend(["sideload", file_path])
+
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1)
+
+            # Monitor process output
+            for line in iter(process.stdout.readline, ''):
+                if stop_event and stop_event.is_set():
+                    process.terminate()
+                    self.logger.log("⚠️ Flash cancelled by user", level='warning')
+                    return
+
+                line = line.strip()
+                if line:
+                    self.logger.log(f"Flash: {line}")
+
+                    # Try to parse progress from output
+                    if '%' in line:
+                        try:
+                            percent_str = line.split('%')[0].split()[-1]
+                            percent = float(percent_str)
+                            if app:
+                                app.update_progress(percent, 100, "Flashing")
+                        except:
+                            pass
+
+            return_code = process.wait()
+
+            if app:
+                app.hide_progress()
+
+            if return_code == 0:
+                self.logger.log("✅ Build flashed successfully!", level='success')
+            else:
+                self.logger.log(f"⚠️ Flash completed with return code {return_code}", level='warning')
+
+        except subprocess.TimeoutExpired:
+            self.logger.log("⚠️ Reboot to recovery timed out", level='error')
+        except subprocess.CalledProcessError as e:
+            self.logger.log(f"❌ Flash failed: {e.stderr if e.stderr else str(e)}", level='error')
+            if app:
+                app.hide_progress()
+        except Exception as e:
+            self.logger.log(f"❌ Unexpected error during flash: {e}", level='error')
+            if app:
+                app.hide_progress()
 
     def upload_logs(self, log_file_path):
         self.logger.log(f"Uploading logs to webpage from {log_file_path}")
